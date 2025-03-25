@@ -22,6 +22,8 @@ const userSchema = new Schema({
     type: String,
     required: true,
   },
+  is2FAEnabled: { type: Boolean, default: false },
+  twoFASecret: { type: String }, // Store the 2FA secret key
 });
 
 // userSchema.pre("save", async (next) => {
