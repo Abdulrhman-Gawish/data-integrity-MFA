@@ -2,6 +2,7 @@ const bcrypt = require("bcrypt");
 const OTPAuth = require("otpauth");
 const encode = require("hi-base32");
 const QRCode = require("qrcode");
+const speakeasy = require("speakeasy");
 const User = require("../models/user");
 const generateToken = require("../utils/generateTokenAndSetCookie");
 const generateBase32Secret = require("../utils/generateBase32Secret");
@@ -22,13 +23,16 @@ const signUp = async (req, res) => {
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
+    const secret = speakeasy.generateSecret({ name: `${userName}` });
 
     const user = new User({
       name,
       role,
       userName,
       password: hashedPassword,
+      twoFASecret: secret.base32,
     });
+    // console.log("userr: ", user.twoFASecret);
 
     await user.save();
     const payload = {
@@ -133,22 +137,22 @@ const enable2FA = async (req, res) => {
       });
     }
 
-    // Generate a secure secret key
-    const base32_secret = generateBase32Secret();
-    user.twoFASecret = base32_secret;
-    await user.save();
+    // Generate a new secret if not already set
+    let secret = user.twoFASecret;
+    if (!secret) {
+      secret = speakeasy.generateSecret({
+        name: `mgmt-task:${user.userName || user.email}`,
+      });
+      user.twoFASecret = secret.base32;
+      await user.save();
+    }
 
-    // Generate TOTP URI for QR code
-    const totp = new OTPAuth.TOTP({
-      issuer: "mgmt-task",
+    const otpauth_url = speakeasy.otpauthURL({
+      secret,
       label: user.userName || user.email,
-      algorithm: "SHA1",
-      digits: 6,
-      period: 60,
-      secret: base32_secret,
+      issuer: "mgmt-task",
+      encoding: "base32",
     });
-
-    const otpauth_url = totp.toString();
 
     // Generate QR code
     let qrCodeData;
@@ -161,14 +165,13 @@ const enable2FA = async (req, res) => {
         message: "Failed to generate QR code",
       });
     }
-
     res.status(200).json({
       success: true,
       message: "Scan the QR code to enable 2FA",
       data: {
         qr_code: qrCodeData,
-        secret: base32_secret,
-        otpauth_url: otpauth_url,
+        secret: secret.base32,
+        otpauth_url: secret.otpauth_url,
       },
     });
   } catch (error) {
@@ -198,20 +201,12 @@ const verify2FA = async (req, res) => {
       });
     }
 
-    const totp = new OTPAuth.TOTP({
-      issuer: "mgmt-task",
-      label: user.userName || user.email,
-      algorithm: "SHA1",
-      digits: 6,
-      period: 60,
+    const verify = speakeasy.totp.verify({
       secret: user.twoFASecret,
+      encoding: "base32",
+      token,
+      window: 1,
     });
-
-    const verify = totp.validate({ token });
-    console.log(verify);
-    console.log("Received OTP:", token);
-    console.log("Stored Secret:", user.twoFASecret);
-    console.log("TOTP Instance:", totp);
 
     if (verify) {
       user.is2FAEnabled = true;
